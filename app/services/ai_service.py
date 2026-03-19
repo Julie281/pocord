@@ -14,7 +14,7 @@ def transcribe_audio(file_path: str) -> str:
     try:
         with open(file_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
+                model="whisper-1",
                 file=audio_file
             )
 

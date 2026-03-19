@@ -6,9 +6,10 @@ import os
 from app.core.config import UPLOAD_DIR
 from app.db.session import SessionLocal
 from app.models.meeting import Meeting
-from app.services.ai_service import analyze_transcript
+from app.services.ai_service import process_audio
 
 router = APIRouter()
+
 
 # ---------------------------
 # ROOT
@@ -19,38 +20,51 @@ def root():
 
 
 # ---------------------------
-# UPLOAD + ANALYSIS
+# UPLOAD + IA PIPELINE
 # ---------------------------
 @router.post("/upload")
 async def upload_audio(file: UploadFile = File(...)):
     db = SessionLocal()
 
-    file_id = str(uuid.uuid4())
-    file_path = os.path.join(UPLOAD_DIR, f"{file_id}.wav")
+    try:
+        # generar id
+        file_id = str(uuid.uuid4())
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        # guardar archivo
+        file_path = os.path.join(UPLOAD_DIR, f"{file_id}.wav")
 
-    # ⚠️ de momento fake transcript (luego metemos OpenAI)
-    transcript = "Reunión de ejemplo donde se acuerda enviar propuesta mañana"
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    analysis = analyze_transcript(transcript)
+        # procesar audio (transcripción + IA)
+        result = process_audio(file_path)
 
-    meeting = Meeting(
-        transcript=transcript,
-        summary=analysis.get("summary"),
-        topics=analysis.get("topics"),
-        tasks=analysis.get("tasks"),
-        speakers=[],
-        metrics={},
-        audio_path=file_path
-    )
+        transcript = result["transcript"]
+        analysis = result["analysis"]
 
-    db.add(meeting)
-    db.commit()
-    db.refresh(meeting)
+        # guardar en DB
+        meeting = Meeting(
+            transcript=transcript,
+            summary=analysis.get("summary"),
+            topics=analysis.get("topics"),
+            tasks=analysis.get("tasks"),
+            speakers=[],
+            metrics={},
+            audio_path=file_path
+        )
 
-    return {"id": meeting.id}
+        db.add(meeting)
+        db.commit()
+        db.refresh(meeting)
+
+        return {"id": meeting.id}
+
+    except Exception as e:
+        print("ERROR UPLOAD:", e)
+        return {"error": str(e)}
+
+    finally:
+        db.close()
 
 
 # ---------------------------
@@ -60,79 +74,96 @@ async def upload_audio(file: UploadFile = File(...)):
 def get_meeting(meeting_id: str):
     db = SessionLocal()
 
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    try:
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
 
-    if not meeting:
-        return {"error": "not found"}
+        if not meeting:
+            return {"error": "not found"}
 
-    return {
-        "id": meeting.id,
-        "transcript": meeting.transcript,
-        "summary": meeting.summary,
-        "topics": meeting.topics,
-        "tasks": meeting.tasks,
-        "metrics": meeting.metrics
-    }
+        return {
+            "id": meeting.id,
+            "transcript": meeting.transcript,
+            "summary": meeting.summary,
+            "topics": meeting.topics,
+            "tasks": meeting.tasks,
+            "metrics": meeting.metrics
+        }
+
+    finally:
+        db.close()
 
 
 # ---------------------------
-# TASKS GLOBAL
+# ALL TASKS
 # ---------------------------
 @router.get("/tasks")
 def get_tasks():
     db = SessionLocal()
 
-    meetings = db.query(Meeting).all()
+    try:
+        meetings = db.query(Meeting).all()
 
-    tasks = []
+        all_tasks = []
 
-    for m in meetings:
-        if m.tasks:
-            for t in m.tasks:
-                t["meeting_id"] = m.id
-                tasks.append(t)
+        for m in meetings:
+            if m.tasks:
+                for t in m.tasks:
+                    t["meeting_id"] = m.id
+                    all_tasks.append(t)
 
-    return tasks
+        return all_tasks
+
+    finally:
+        db.close()
 
 
 # ---------------------------
-# REMINDERS
+# REMINDERS (pending tasks)
 # ---------------------------
 @router.get("/reminders/today")
 def reminders_today():
     db = SessionLocal()
-    meetings = db.query(Meeting).all()
 
-    tasks = []
+    try:
+        meetings = db.query(Meeting).all()
 
-    for m in meetings:
-        if m.tasks:
-            for t in m.tasks:
-                if t.get("status", "pending") != "done":
-                    tasks.append(t)
+        tasks = []
 
-    return tasks
+        for m in meetings:
+            if m.tasks:
+                for t in m.tasks:
+                    if t.get("status", "pending") != "done":
+                        tasks.append(t)
+
+        return tasks
+
+    finally:
+        db.close()
 
 
 # ---------------------------
-# SEARCH
+# SEARCH IN TRANSCRIPTS
 # ---------------------------
 @router.get("/search")
 def search(query: str):
     db = SessionLocal()
 
-    meetings = db.query(Meeting).all()
+    try:
+        meetings = db.query(Meeting).all()
 
-    results = []
+        results = []
 
-    for m in meetings:
-        if query.lower() in (m.transcript or "").lower():
-            results.append({
-                "id": m.id,
-                "summary": m.summary
-            })
+        for m in meetings:
+            if query.lower() in (m.transcript or "").lower():
+                results.append({
+                    "id": m.id,
+                    "summary": m.summary
+                })
 
-    return results
+        return results
+
+    finally:
+        db.close()
 
 
 # ---------------------------
@@ -142,11 +173,15 @@ def search(query: str):
 def daily_summary():
     db = SessionLocal()
 
-    meetings = db.query(Meeting).all()
+    try:
+        meetings = db.query(Meeting).all()
 
-    summaries = [m.summary for m in meetings if m.summary]
+        summaries = [m.summary for m in meetings if m.summary]
 
-    return {
-        "count": len(meetings),
-        "summaries": summaries
-    }
+        return {
+            "count": len(meetings),
+            "summaries": summaries
+        }
+
+    finally:
+        db.close()

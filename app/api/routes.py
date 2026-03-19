@@ -1,10 +1,16 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File
+import shutil
+import uuid
+import os
+
+from app.core.config import UPLOAD_DIR
 
 router = APIRouter()
 
 @router.get("/")
 def root():
     return {"status": "ok"}
+
 
 @router.post("/upload")
 async def upload_audio(file: UploadFile = File(...)):

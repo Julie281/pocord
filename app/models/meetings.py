@@ -15,4 +15,4 @@ class Meeting(Base):
     tasks = Column(JSON)
     speakers = Column(JSON)
     metrics = Column(JSON)
-    audio_path = Column(String, nullable=True)
+    audio_path = Column(String)

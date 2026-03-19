@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from app.core.config import DATABASE_URL
 
 load_dotenv()
 

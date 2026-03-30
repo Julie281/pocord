@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")

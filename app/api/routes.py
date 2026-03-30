@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Query
+from fastapi.responses import JSONResponse
 import shutil
 import uuid
 import os
@@ -11,46 +12,40 @@ from app.services.ai_service import process_audio
 router = APIRouter()
 
 
-# ---------------------------
-# ROOT
-# ---------------------------
 @router.get("/")
 def root():
     return {"status": "ok"}
 
 
-# ---------------------------
-# UPLOAD + IA PIPELINE
-# ---------------------------
 @router.post("/upload")
 async def upload_audio(file: UploadFile = File(...)):
     db = SessionLocal()
 
     try:
-        # generar id
         file_id = str(uuid.uuid4())
 
-        # guardar archivo
-        file_path = os.path.join(UPLOAD_DIR, f"{file_id}.wav")
+        original_name = file.filename or "audio.wav"
+        _, ext = os.path.splitext(original_name)
+        if not ext:
+            ext = ".wav"
+
+        file_path = os.path.join(UPLOAD_DIR, f"{file_id}{ext}")
 
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # procesar audio (transcripción + IA)
         result = process_audio(file_path)
+        transcript = result.get("transcript", "")
+        analysis = result.get("analysis", {})
 
-        transcript = result["transcript"]
-        analysis = result["analysis"]
-
-        # guardar en DB
         meeting = Meeting(
             transcript=transcript,
-            summary=analysis.get("summary"),
-            topics=analysis.get("topics"),
-            tasks=analysis.get("tasks"),
+            summary=analysis.get("summary", ""),
+            topics=analysis.get("topics", []),
+            tasks=analysis.get("tasks", []),
             speakers=[],
             metrics={},
-            audio_path=file_path
+            audio_path=file_path,
         )
 
         db.add(meeting)
@@ -61,15 +56,15 @@ async def upload_audio(file: UploadFile = File(...)):
 
     except Exception as e:
         print("ERROR UPLOAD:", e)
-        return {"error": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
     finally:
         db.close()
 
 
-# ---------------------------
-# GET MEETING
-# ---------------------------
 @router.get("/meeting/{meeting_id}")
 def get_meeting(meeting_id: str):
     db = SessionLocal()
@@ -78,38 +73,41 @@ def get_meeting(meeting_id: str):
         meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
 
         if not meeting:
-            return {"error": "not found"}
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Meeting not found"}
+            )
 
         return {
             "id": meeting.id,
-            "transcript": meeting.transcript,
-            "summary": meeting.summary,
-            "topics": meeting.topics,
-            "tasks": meeting.tasks,
-            "metrics": meeting.metrics
+            "transcript": meeting.transcript or "",
+            "summary": meeting.summary or "",
+            "topics": meeting.topics or [],
+            "tasks": meeting.tasks or [],
+            "speakers": meeting.speakers or [],
+            "metrics": meeting.metrics or {},
+            "audio_path": meeting.audio_path or "",
         }
 
     finally:
         db.close()
 
 
-# ---------------------------
-# ALL TASKS
-# ---------------------------
 @router.get("/tasks")
 def get_tasks():
     db = SessionLocal()
 
     try:
         meetings = db.query(Meeting).all()
-
         all_tasks = []
 
-        for m in meetings:
-            if m.tasks:
-                for t in m.tasks:
-                    t["meeting_id"] = m.id
-                    all_tasks.append(t)
+        for meeting in meetings:
+            tasks = meeting.tasks or []
+            for task in tasks:
+                task_copy = dict(task)
+                task_copy["meeting_id"] = meeting.id
+                task_copy["meeting_summary"] = meeting.summary or ""
+                all_tasks.append(task_copy)
 
         return all_tasks
 
@@ -117,48 +115,79 @@ def get_tasks():
         db.close()
 
 
-# ---------------------------
-# REMINDERS (pending tasks)
-# ---------------------------
 @router.get("/reminders/today")
 def reminders_today():
     db = SessionLocal()
 
     try:
         meetings = db.query(Meeting).all()
+        pending_tasks = []
 
-        tasks = []
+        for meeting in meetings:
+            tasks = meeting.tasks or []
+            for task in tasks:
+                if task.get("status", "pending") != "done":
+                    task_copy = dict(task)
+                    task_copy["meeting_id"] = meeting.id
+                    task_copy["meeting_summary"] = meeting.summary or ""
+                    pending_tasks.append(task_copy)
 
-        for m in meetings:
-            if m.tasks:
-                for t in m.tasks:
-                    if t.get("status", "pending") != "done":
-                        tasks.append(t)
-
-        return tasks
+        return pending_tasks
 
     finally:
         db.close()
 
 
-# ---------------------------
-# SEARCH IN TRANSCRIPTS
-# ---------------------------
 @router.get("/search")
-def search(query: str):
+def search(query: str = Query(default="")):
     db = SessionLocal()
 
     try:
         meetings = db.query(Meeting).all()
+        q = (query or "").strip().lower()
+
+        if not q:
+            return [
+                {
+                    "id": meeting.id,
+                    "summary": meeting.summary or "Sin resumen",
+                    "transcript": meeting.transcript or "",
+                    "topics": meeting.topics or [],
+                }
+                for meeting in meetings
+            ]
 
         results = []
 
-        for m in meetings:
-            if query.lower() in (m.transcript or "").lower():
-                results.append({
-                    "id": m.id,
-                    "summary": m.summary
-                })
+        for meeting in meetings:
+            transcript = (meeting.transcript or "").lower()
+            summary = (meeting.summary or "").lower()
+
+            topics_text = " ".join(meeting.topics or []).lower()
+
+            tasks_text = " ".join(
+                [
+                    f"{t.get('task', '')} {t.get('owner', '')} {t.get('priority', '')}"
+                    for t in (meeting.tasks or [])
+                ]
+            ).lower()
+
+            hay_match = (
+                q in transcript
+                or q in summary
+                or q in topics_text
+                or q in tasks_text
+            )
+
+            if hay_match:
+                results.append(
+                    {
+                        "id": meeting.id,
+                        "summary": meeting.summary or "Sin resumen",
+                        "transcript": meeting.transcript or "",
+                        "topics": meeting.topics or [],
+                    }
+                )
 
         return results
 
@@ -166,9 +195,6 @@ def search(query: str):
         db.close()
 
 
-# ---------------------------
-# DAILY SUMMARY
-# ---------------------------
 @router.get("/daily-summary")
 def daily_summary():
     db = SessionLocal()
@@ -176,11 +202,10 @@ def daily_summary():
     try:
         meetings = db.query(Meeting).all()
 
-        summaries = [m.summary for m in meetings if m.summary]
-
         return {
             "count": len(meetings),
-            "summaries": summaries
+            "summaries": [m.summary for m in meetings if m.summary],
+            "tasks_count": sum(len(m.tasks or []) for m in meetings),
         }
 
     finally:

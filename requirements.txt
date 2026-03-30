@@ -6,3 +6,5 @@ openai
 python-multipart
 reportlab
 openai
+mistralai
+pydantic

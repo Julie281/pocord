@@ -21,7 +21,7 @@ def transcribe_audio(file_path: str) -> str:
 
         with open(file_path, "rb") as f:
             response = client.audio.transcriptions.complete(
-                model="voxtral-mini-latest",
+                model="voxtral-small-latest",
                 file={
                     "content": f,
                     "file_name": file_name,
